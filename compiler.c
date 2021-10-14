@@ -909,3 +909,111 @@ void expression(int level){
         }
     }
 }
+
+void statement(){
+    // there are 8 kinds of statements here:
+    // 1. if (...) <statement> [else <statement>]
+    // 2. while (...) <statement>
+    // 3. { <statement> }
+    // 4. return xxx;
+    // 5. <empty statement>;
+    // 6. expression; (expression end with semicolon)
+
+    int *a, *b; // for control flow
+
+    if(token == If){
+        // if (expr) <statement> [else <statement>]
+        //
+        //  Layout:
+        //      if (expr)           <cond>
+        //                          JZ a
+        //      <statement>         <statement>
+        //      else:                JMP b
+        // a:
+        //      <statement>         <statement>
+        // b:                       b:
+
+        match(If);
+        match('(');
+        expression(Assign); // parse condition
+        match(')');
+
+        // emit code for it
+        *++text = JZ;
+        // There is a trick here, this pointer b not same as the b in above layout.
+        // it means the next instruction address of the whole loop either there is Else or not.
+        b = ++text;
+
+        statement(); // parse statement later
+        // but I am not very clear about how to deal with no control flow code later 
+        // the '6. expression; (expression end with semicolon)' statement can dispose this situation.
+        if(token == Else){
+            // for else statement
+            match(Else);
+
+            *b = (int)(text + 3);
+            *++text = JMP;
+            b = ++text;
+
+            statement();
+        }
+
+        *b = (int)(text + 1);
+    }
+    else if(token == While){
+        //
+        // a:                     a:
+        //    while (<cond>)        <cond>
+        //                          JZ b
+        //     <statement>          <statement>
+        //                          JMP a
+        // b:                     b:
+        match(While);
+
+        a = text + 1;
+        match('(');
+        expression(Assign);
+        match(')');
+
+        *++text = JZ;
+        b = ++text;
+
+        statement();
+
+        *++text = JMP;
+        *++text = (int)a;
+        *b = (int)(text + 1);
+    }
+    else if (token == '{') {
+        // { <statement> ... }
+        match('{');
+
+        while (token != '}') {
+            statement();
+        }
+
+        match('}');
+    }
+    else if (token == Return) {
+        // return [expression];
+        match(Return);
+
+        if (token != ';') {
+            expression(Assign);
+        }
+
+        match(';');
+
+        // emit code for return
+        *++text = LEV;
+    }
+    else if (token == ';') {
+        // empty statement
+        match(';');
+    }
+    else {
+        // a = b; or function_call();
+        expression(Assign);
+        match(';');
+    }
+}
