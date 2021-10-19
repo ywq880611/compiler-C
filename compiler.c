@@ -107,7 +107,7 @@ void next(){
             }
 
             current_id[Name] = (int)last_pos;
-            // we need to resave this name cause this address store the src code,
+            // we need to resave this name cause this address store the src code !!
             // we may remove src code in the future
             current_id[Hash] = hash;
             current_id[Token] = Id;
@@ -359,6 +359,7 @@ void expression(int level){
 
             if(token == '('){
                 // function, I am not very clear??
+                // To be honest, I suppose this is just function call, not define??
                 match('(');
                 // deal with arguments;
                 tmp = 0;// number of arguments
@@ -377,6 +378,8 @@ void expression(int level){
 
                 if(id[Class] == Sys){
                     // It's the address the sys function
+                    // Why system function didn't have JMP instruction ??
+                    // what's this id[Value] represents??
                     *++text = id[Value];
                 }
                 else if(id[Class] == Fun){
@@ -1015,5 +1018,268 @@ void statement(){
         // a = b; or function_call();
         expression(Assign);
         match(';');
+    }
+}
+
+void enum_declaration() {
+    // parse enum [id] { a = 1, b = 3, ...}
+    int i;
+    i = 0;
+    while (token != '}') {
+        if (token != Id) {
+            printf("%d: bad enum identifier %d\n", line, token);
+            exit(-1);
+        }
+        next();
+        if (token == Assign) {
+            // like {a=10}
+            next();
+            if (token != Num) {
+                printf("%d: bad enum initializer\n", line);
+                exit(-1);
+            }
+            i = token_val;
+            next();
+        }
+
+        current_id[Class] = Num;
+        current_id[Type] = INT;
+        current_id[Value] = i++;
+
+        if (token == ',') {
+            next();
+        }
+    }
+}
+
+
+void function_parameter(){
+    int type;
+    int params;
+    params = 0;
+    while(token != ')'){
+        // int or char type argument
+        type = INT;
+        if (token == Int) {
+            match(Int);
+        } else if (token == Char) {
+            type = CHAR;
+            match(Char);
+        }
+
+        // pointer argument
+        while (token == Mul) {
+            match(Mul);
+            type = type + PTR;
+        }
+
+        // parameter name
+        if (token != Id) {
+            printf("%d: bad parameter declaration\n", line);
+            exit(-1);
+        }
+        if (current_id[Class] == Loc) {
+            printf("%d: duplicate parameter declaration\n", line);
+            exit(-1);
+        }
+
+        match(Id);
+
+        // store local variable
+        // BClass means backup class,
+        // if there is a global variable which has the same name as local variable
+        // We will use backup to keep they original information
+        // But we just support two level of nested now ??
+        // I suppose maybe we can modify this by priority or linked list in the future ??
+
+        // if there is no global variable here, the value in Class and BClass are both null,
+        // after the function call we will recovery the Class and other information to null
+        // The current_id will be a empty ID, we can use it to store another ID again.
+        current_id[BClass] = current_id[Class]; current_id[Class]  = Loc;
+        current_id[BType]  = current_id[Type];  current_id[Type]   = type;
+        current_id[BValue] = current_id[Value]; current_id[Value]  = params++;   // index of current parameter
+
+        if (token == ',') {
+            match(',');
+        }
+    }
+    index_of_bp = params+1;
+}
+
+void function_body(){
+    // type func_name (...) {...}
+    //                   -->|   |<--
+
+    // ... {
+    // 1. local declarations
+    // 2. statements
+    // }
+
+    int pos_local; // position of local variables on the stack.
+    int type;
+    pos_local = index_of_bp; // we get it from above function_parameter() function
+
+    while (token == Int || token == Char) {
+        // local variable declaration, just like global ones.
+        basetype = (token == Int) ? INT : CHAR;
+        match(token);
+
+        while (token != ';') {
+            type = basetype;
+            while (token == Mul) {
+                match(Mul);
+                type = type + PTR;
+            }
+
+            if (token != Id) {
+                // invalid declaration
+                printf("%d: bad local declaration\n", line);
+                exit(-1);
+            }
+            if (current_id[Class] == Loc) {
+                // identifier exists
+
+                // what's this mean ??
+                // If there is another function which has a parameter ID called A
+                // In this function we hava a parameter ID called A too
+                // Will we fail in compile ??
+
+                // I am not very clear about this configuration.
+                // This variable is not parameter, it the local variable in this function body !!
+                // it is not same as the argument.
+                printf("%d: duplicate local declaration\n", line);
+                exit(-1);
+            }
+            match(Id);
+
+            // store the local variable
+            current_id[BClass] = current_id[Class]; current_id[Class]  = Loc;
+            current_id[BType]  = current_id[Type];  current_id[Type]   = type;
+            current_id[BValue] = current_id[Value]; current_id[Value]  = ++pos_local;   // index of current parameter
+
+            if (token == ',') {
+                match(',');
+            }
+        }
+        match(';');
+    }
+
+    // save the address and allocate the size for local variable !!
+    *++text = ENT;
+    *++text = pos_local - index_of_bp;
+
+    // statements
+    while (token != '}') {
+        statement();
+    }
+
+    // emit code for leaving the sub function
+    *++text = LEV;
+}
+
+void function_declaration(){
+    // type func_name (...) {...}
+    //               | this part
+
+    match('(');
+    function_parameter();
+    match(')');
+    match('{');
+    function_body();
+
+    // unwind local variable to global variable
+    current_id = symbols;
+    while (current_id[Token]) {
+        if (current_id[Class] == Loc) {
+            current_id[Class] = current_id[BClass];
+            current_id[Type]  = current_id[BType];
+            current_id[Value] = current_id[BValue];
+        }
+        current_id = current_id + IdSize;
+    }
+}
+
+void global_declaration(){
+    // type [*] id [; | (...) {...}]
+
+    int type;
+    int i;
+
+    basetype = INT;
+
+    // parse enum, this should be treated alone.
+    if (token == Enum) {
+        // enum [id] { a = 10, b = 20, ... }
+        match(Enum);
+        if (token != '{') {
+            match(Id); // skip the [id] part
+        }
+        if (token == '{') {
+            // parse the assign part
+            match('{');
+            enum_declaration();
+            match('}');
+        }
+
+        match(';');
+        return;
+    }
+
+    // parse type information
+    if (token == Int) {
+        match(Int);
+    }
+    else if (token == Char) {
+        match(Char);
+        basetype = CHAR;
+    }
+
+    // parse the comma seperated variable declaration.
+    while (token != ';' && token != '}') {
+        type = basetype;
+        // parse pointer type, note that there may exist `int ****x;`
+        while (token == Mul) {
+            match(Mul);
+            type = type + PTR;
+        }
+
+        if (token != Id) {
+            // invalid declaration
+            printf("%d: bad global declaration\n", line);
+            exit(-1);
+        }
+        if (current_id[Class]) {
+            // identifier exists
+            printf("%d: duplicate global declaration\n", line);
+            exit(-1);
+        }
+        match(Id);
+        current_id[Type] = type;
+
+        if (token == '(') {
+            current_id[Class] = Fun;
+            current_id[Value] = (int)(text + 1); // the memory address of function
+            function_declaration();
+        } else {
+            // variable declaration
+            current_id[Class] = Glo; // global variable
+            current_id[Value] = (int)data; // assign memory address
+            data = data + sizeof(int);
+        }
+
+        if (token == ',') {
+            match(',');
+        }
+    }
+    next();
+}
+
+void program() {
+    // Parse all global declaration.
+
+    // get next token
+    next();
+    while (token > 0) {
+        global_declaration();
     }
 }
